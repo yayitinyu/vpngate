@@ -54,7 +54,15 @@ def extract_endpoint(ovpn: str) -> tuple[str, int, Optional[str]]:
 
 
 def decode_config(b64: str) -> str:
-    return base64.b64decode(b64).decode("utf-8", errors="replace")
+    text = base64.b64decode(b64).decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _option_name(line: str) -> Optional[str]:
+    stripped = line.strip()
+    if not stripped or stripped[0] in "#;<":
+        return None
+    return stripped.split()[0].lower()
 
 
 def sanitize(
@@ -65,18 +73,19 @@ def sanitize(
     verbose: bool = False,
 ) -> str:
     """Drop host-touching options and pin fail-closed, legacy-crypto-safe flags."""
+    ovpn = ovpn.replace("\r\n", "\n").replace("\r", "\n")
     kept: list[str] = []
     for raw in ovpn.splitlines():
         line = raw.strip()
         if not line:
             continue
         if line.startswith("#") or line.startswith(";"):
-            kept.append(raw)
+            kept.append(line)
             continue
         lower = line.lower()
         if any(lower.startswith(p) for p in DROP_PREFIXES):
             continue
-        kept.append(raw)
+        kept.append(line)
 
     extras = [
         "client",
@@ -121,16 +130,18 @@ def sanitize(
     else:
         extras.append("cipher AES-128-CBC")
 
-    # Dedup while keeping order (client/nobind may already exist).
-    seen: set[str] = set()
-    out: list[str] = []
-    for line in kept + extras:
-        key = line.strip().lower()
-        if key in seen and not key.startswith("<") and not key.startswith("pull-filter"):
+    # Only skip extras whose *option name* is already present.
+    # Never dedup full lines: CA and client cert both start with
+    # -----BEGIN CERTIFICATE----- and must both survive.
+    present = {name for name in (_option_name(line) for line in kept) if name}
+    out = list(kept)
+    for extra in extras:
+        name = _option_name(extra)
+        if name and name in present and name != "pull-filter":
             continue
-        if not key.startswith("<") and not key.startswith("pull-filter"):
-            seen.add(key)
-        out.append(line)
+        out.append(extra)
+        if name:
+            present.add(name)
     return "\n".join(out) + "\n"
 
 

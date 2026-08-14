@@ -45,6 +45,27 @@ class OvpnTests(unittest.TestCase):
             (2, 6),
         )
 
+    def test_keeps_both_pem_certificates(self):
+        raw = (
+            "dev tun\r\n"
+            "<ca>\r\n"
+            "-----BEGIN CERTIFICATE-----\r\n"
+            "CABODY\r\n"
+            "-----END CERTIFICATE-----\r\n"
+            "</ca>\r\n"
+            "<cert>\r\n"
+            "-----BEGIN CERTIFICATE-----\r\n"
+            "CLIENTBODY\r\n"
+            "-----END CERTIFICATE-----\r\n"
+            "</cert>\r\n"
+        )
+        out = sanitize(raw, openvpn_version=(2, 6))
+        self.assertNotIn("\r", out)
+        self.assertEqual(out.count("-----BEGIN CERTIFICATE-----"), 2)
+        self.assertIn("CABODY", out)
+        self.assertIn("CLIENTBODY", out)
+        self.assertIn("<cert>", out)
+
 
 if __name__ == "__main__":
     unittest.main()
