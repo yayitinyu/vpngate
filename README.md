@@ -20,7 +20,7 @@ socks5h://vg_a8f3k2m1:Xk9mP2qR7tL4nW8c@203.0.113.10:41287
 
 - 用户名、密码、高位端口都是随机生成的，写在 `/etc/vpngate/node.conf`，重启不变
 - 默认对外监听，并放行本机防火墙（ufw / firewalld / iptables）
-- 默认用 systemd 常驻，掉线会自动换下一个志愿者
+- 默认用 systemd 常驻。志愿者进程挂了、或出口连续探活失败，会自动换下一个；每天服务器时间 **04:00** 再主动换一次出口 IP。入口那一行 URL 不变。
 
 ```bash
 vpngate url      # 再看一次节点
@@ -75,7 +75,8 @@ sudo ./install.sh --no-service    # 不装 systemd
 - 筑波大学学术项目，带宽是志愿者捐的。个人偶尔用可以，不要当 24/7 中继，更不要转售。
 - **不是**隐私工具。志愿者和项目方看得到流量元数据。
 - 志愿者 IP 经常被 Google / Cloudflare / 银行拉黑。
-- `--watch` / systemd 换线后，**入口** URL 不变，**出口 IP** 会变。
+- systemd / 健康检查 / 凌晨 4 点换线后，**入口** URL 不变，**出口 IP** 会变。
+- 探活默认每 120 秒一次，连续 3 次失败才换。可在 `/etc/vpngate/node.conf` 里改 `ROTATE_HOUR`、`HEALTH_INTERVAL`、`HEALTH_FAILS`。
 
 ## 许可证
 

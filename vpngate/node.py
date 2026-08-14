@@ -119,6 +119,9 @@ def save_node(node: Node, path: Optional[Path] = None) -> Path:
         f"SOCKS_PASS={node.password}\n"
         f"SOCKS_PORT={node.port}\n"
         f"SOCKS_BIND={node.bind}\n"
+        "# ROTATE_HOUR=4\n"
+        "# HEALTH_INTERVAL=120\n"
+        "# HEALTH_FAILS=3\n"
     )
     conf.write_text(body, encoding="utf-8")
     try:

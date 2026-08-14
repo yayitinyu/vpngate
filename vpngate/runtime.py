@@ -34,6 +34,7 @@ from vpngate.probe import probe_servers
 from vpngate.rank import select
 from vpngate.relay import serve_relay
 from vpngate.util import CommandError, have, is_linux, is_root, run
+from vpngate.watch import HealthTracker, health_ok, load_watch_settings, should_scheduled_rotate
 
 LOG = logging.getLogger(__name__)
 
@@ -81,6 +82,9 @@ class Options:
         state_dir: Optional[Path] = None,
         skip_ips: Optional[set[str]] = None,
         verbose: bool = False,
+        rotate_hour: Optional[int] = None,
+        health_interval: Optional[int] = None,
+        health_fails: Optional[int] = None,
     ):
         self.country = country or ["JP"]
         self.classes = classes or list(DEFAULT_CLASSES)
@@ -100,6 +104,10 @@ class Options:
         self.state_dir = Path(state_dir) if state_dir else default_state_dir()
         self.skip_ips = skip_ips or set()
         self.verbose = verbose
+        settings = load_watch_settings()
+        self.rotate_hour = settings.rotate_hour if rotate_hour is None else rotate_hour
+        self.health_interval = settings.health_interval if health_interval is None else health_interval
+        self.health_fails = settings.health_fails if health_fails is None else health_fails
 
 
 def build_catalog(opt: Options) -> list[Server]:
@@ -182,6 +190,7 @@ class Gateway:
             signal.signal(signal.SIGTERM, self._on_signal)
 
         setup_ns(self.opt.ns)
+        self._host_ip = host_ip
         skip = set(self.opt.skip_ips)
         try:
             while not self.stop.is_set():
@@ -198,7 +207,7 @@ class Gateway:
                     continue
 
                 attempts = 0
-                connected = False
+                rotated = False
                 for server in candidates:
                     if self.stop.is_set():
                         break
@@ -216,18 +225,19 @@ class Gateway:
                         server.klass_reason,
                     )
                     if self._connect_one(server, host_ip):
-                        connected = True
                         if opt.watch:
                             self._supervise()
                             self._stop_vpn_processes()
                             if self.stop.is_set():
                                 break
-                            LOG.warning("tunnel died, rotating")
-                            connected = False
-                            continue
+                            LOG.warning("rotating exit (entry URL unchanged)")
+                            rotated = True
+                            break
                         self._supervise()
                         return 0 if self.stop.is_set() else 1
-                if connected:
+                if self.stop.is_set():
+                    break
+                if rotated:
                     continue
                 if not opt.watch:
                     LOG.error("all attempts failed")
@@ -410,6 +420,15 @@ class Gateway:
 
     def _supervise(self) -> None:
         assert self.openvpn is not None
+        started_at = datetime.now()
+        last_health = time.monotonic()
+        tracker = HealthTracker(self.opt.health_fails)
+        LOG.info(
+            "watching exit (health every %ds, %d strikes; daily rotate %02d:00 local)",
+            self.opt.health_interval,
+            self.opt.health_fails,
+            self.opt.rotate_hour,
+        )
         while not self.stop.is_set():
             rc = self.openvpn.poll()
             if rc is not None:
@@ -418,7 +437,33 @@ class Gateway:
             if self.socks_proc is not None and self.socks_proc.poll() is not None:
                 LOG.warning("socks exited %s", self.socks_proc.returncode)
                 return
-            time.sleep(0.5)
+            now = datetime.now()
+            if should_scheduled_rotate(now, started_at, None, self.opt.rotate_hour):
+                LOG.info("scheduled exit rotate at %02d:00 local", self.opt.rotate_hour)
+                return
+            if time.monotonic() - last_health >= self.opt.health_interval:
+                last_health = time.monotonic()
+                ok = self._probe_exit()
+                if tracker.record(ok):
+                    LOG.warning(
+                        "exit health failed %d times, rotating",
+                        tracker.fails,
+                    )
+                    return
+                if not ok:
+                    LOG.warning(
+                        "exit health %d/%d failed",
+                        tracker.fails,
+                        self.opt.health_fails,
+                    )
+            self.stop.wait(0.5)
+
+    def _probe_exit(self) -> bool:
+        exit_ip = public_ip_in_ns(self.opt.ns, sys.executable, timeout=15.0)
+        ok = health_ok(exit_ip, getattr(self, "_host_ip", None))
+        if ok:
+            LOG.debug("exit health ok %s", exit_ip)
+        return ok
 
     def _wait_tun(self) -> Optional[str]:
         deadline = time.time() + CONNECT_WAIT
