@@ -30,6 +30,10 @@ DROP_PREFIXES = (
     "ping ",
     "ping-restart",
     "resolv-retry",
+    "persist-tun",
+    "connect-retry",
+    "connect-retry-max",
+    "connect-timeout",
 )
 
 
@@ -91,7 +95,10 @@ def sanitize(
         "client",
         "nobind",
         "persist-key",
-        "resolv-retry 8",
+        "resolv-retry 2",
+        "connect-retry 1",
+        "connect-retry-max 1",
+        "connect-timeout 8",
         "ping 10",
         "ping-restart 45",
         "mssfix 1280",

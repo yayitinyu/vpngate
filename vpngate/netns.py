@@ -105,6 +105,24 @@ def lock_routes(ns: str, vpn_ip: str, tun: str, gw: str = HOST_IP) -> None:
     ns_exec(ns, ["ip", "route", "replace", "default", "dev", tun])
 
 
+def relax_for_reconnect(ns: str, gw: str = HOST_IP) -> None:
+    """Undo kill-switch and point default back at the veth.
+
+    Otherwise the next OpenVPN handshake is blackholed (Network is unreachable)
+    because OUTPUT is still DROP and default still points at a dead tun.
+    """
+    for tool in ("iptables", "ip6tables"):
+        if not _has(tool):
+            continue
+        ns_exec(ns, [tool, "-F"], check=False)
+        ns_exec(ns, [tool, "-X"], check=False)
+        ns_exec(ns, [tool, "-P", "INPUT", "ACCEPT"], check=False)
+        ns_exec(ns, [tool, "-P", "OUTPUT", "ACCEPT"], check=False)
+        ns_exec(ns, [tool, "-P", "FORWARD", "ACCEPT"], check=False)
+    ns_exec(ns, ["ip", "route", "replace", "default", "via", gw, "dev", VETH_NS], check=False)
+    LOG.info("kill-switch off, default via %s", gw)
+
+
 def apply_killswitch(ns: str, vpn_ip: str) -> None:
     """Fail-closed: after tun is up, only tun + the VPN endpoint may leave the ns."""
     for family, tool in (("ipv4", "iptables"), ("ipv6", "ip6tables")):

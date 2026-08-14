@@ -25,6 +25,7 @@ from vpngate.netns import (
     find_tun,
     lock_routes,
     ns_exists,
+    relax_for_reconnect,
     setup as setup_ns,
     teardown as teardown_ns,
     write_auth_file,
@@ -191,11 +192,13 @@ class Gateway:
 
         setup_ns(self.opt.ns)
         self._host_ip = host_ip
-        skip = set(self.opt.skip_ips)
+        last_exit: Optional[str] = next(iter(self.opt.skip_ips), None) if self.opt.skip_ips else None
         try:
             while not self.stop.is_set():
                 opt = self.opt
-                opt.skip_ips = skip
+                # Only skip the exit we just left so 04:00 actually changes IP.
+                # A process-lifetime skip set eventually empties the pool.
+                opt.skip_ips = {last_exit} if last_exit else set()
                 candidates = build_catalog(opt)
                 if not candidates:
                     LOG.error(
@@ -203,6 +206,7 @@ class Gateway:
                     )
                     if not opt.watch:
                         return 1
+                    last_exit = None
                     self._wait(60)
                     continue
 
@@ -214,7 +218,6 @@ class Gateway:
                     if attempts >= opt.tries:
                         break
                     attempts += 1
-                    skip.add(server.ip)
                     LOG.info(
                         "try %d/%d %s %s (%s, %s)",
                         attempts,
@@ -225,6 +228,7 @@ class Gateway:
                         server.klass_reason,
                     )
                     if self._connect_one(server, host_ip):
+                        last_exit = server.ip
                         if opt.watch:
                             self._supervise()
                             self._stop_vpn_processes()
@@ -277,6 +281,8 @@ class Gateway:
 
     def _connect_one(self, server: Server, host_ip: Optional[str]) -> bool:
         self._stop_vpn_processes()
+        if ns_exists(self.opt.ns):
+            relax_for_reconnect(self.opt.ns)
         ovpn_raw = decode_config(server.ovpn_b64)
         version = (2, 6)
         if have("openvpn"):
@@ -492,6 +498,11 @@ class Gateway:
                 proc.wait(timeout=3)
         self.socks_proc = None
         self.openvpn = None
+        if self.state_path.exists():
+            try:
+                self.state_path.unlink()
+            except OSError:
+                pass
         for fh in (self._ovpn_log, self._socks_log):
             if fh is not None:
                 try:

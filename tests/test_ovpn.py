@@ -12,6 +12,7 @@ remote 203.0.113.50 443
 up /etc/openvpn/update-resolv-conf
 down /etc/openvpn/update-resolv-conf
 http-proxy 10.0.0.1 8080
+persist-tun
 verb 3
 #auth-user-pass
 <ca>
@@ -31,6 +32,8 @@ class OvpnTests(unittest.TestCase):
         self.assertNotIn("http-proxy", out)
         self.assertIn("redirect-gateway def1", out)
         self.assertIn("auth-user-pass", out)
+        self.assertIn("connect-retry-max 1", out)
+        self.assertNotIn("persist-tun", out)
         self.assertIn("providers legacy default", out)
         self.assertIn("<ca>", out)
 
