@@ -341,10 +341,17 @@ class Gateway:
             return False
 
         self._write_state(server, exit_ip, host_ip or "")
+        from vpngate.node import advertise_host, format_url
+
+        listen_host, port_s = self.opt.socks.rsplit(":", 1)
+        shown_host = advertise_host() if listen_host in {"0.0.0.0", "::", ""} else listen_host
+        if self.opt.socks_user:
+            endpoint = format_url(self.opt.socks_user, self.opt.socks_pass or "", shown_host, int(port_s))
+        else:
+            endpoint = f"socks5h://{shown_host}:{port_s}"
         print(
-            f"SOCKS5H  socks5h://{self.opt.socks}\n"
-            f"exit     {exit_ip}  ({server.hostname} {server.ip} {server.klass})\n"
-            f"example  curl --proxy socks5h://{self.opt.socks} https://ifconfig.me",
+            f"{endpoint}\n"
+            f"出口  {exit_ip}  ({server.hostname} {server.ip} {server.klass})",
             flush=True,
         )
         return True

@@ -1,16 +1,10 @@
 #!/bin/sh
-# Install vpngate-socks onto a Linux host.
+# 一键装好并打出 socks5h://用户:密码@IP:端口
 #
-# From a clone:
-#   sudo ./install.sh
-# One-liner (public repo):
 #   curl -fsSL https://raw.githubusercontent.com/yayitinyu/vpngate/main/install.sh | sudo sh
-#
-# Options (env or flags):
-#   --prefix DIR       install tree (default /opt/vpngate)
-#   --bindir DIR       wrapper path dir (default /usr/local/bin)
-#   --with-service     install and enable systemd unit (optional)
-#   --repo URL         git URL when the script is not run from a checkout
+#   sudo ./install.sh
+#   sudo ./install.sh --no-service     # 不装 systemd，只生成节点
+#   sudo ./install.sh --rotate         # 换一套新账号端口
 
 set -eu
 
@@ -18,12 +12,13 @@ REPO_DEFAULT="https://github.com/yayitinyu/vpngate.git"
 PREFIX="${PREFIX:-/opt/vpngate}"
 BINDIR="${BINDIR:-/usr/local/bin}"
 REPO_URL="${VPNGATE_REPO:-$REPO_DEFAULT}"
-WITH_SERVICE=0
+WITH_SERVICE=1
+ROTATE=0
 CONF_DIR="/etc/vpngate"
 MARKER_NAME=".vpngate-installed"
 
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -37,6 +32,8 @@ while [ $# -gt 0 ]; do
         --bindir) BINDIR="${2:-}"; shift 2 ;;
         --repo) REPO_URL="${2:-}"; shift 2 ;;
         --with-service) WITH_SERVICE=1; shift ;;
+        --no-service) WITH_SERVICE=0; shift ;;
+        --rotate) ROTATE=1; shift ;;
         --) shift; break ;;
         *) die "unknown option: $1" ;;
     esac
@@ -51,11 +48,10 @@ case "$PREFIX" in
         ;;
 esac
 
-[ "$(id -u)" -eq 0 ] || die "run as root"
-[ "$(uname -s)" = "Linux" ] || die "Linux only"
+[ "$(id -u)" -eq 0 ] || die "需要 root"
+[ "$(uname -s)" = "Linux" ] || die "只支持 Linux"
 
 script_dir() {
-    # When piped from curl, $0 is "sh" and this returns empty.
     case "$0" in
         /*) dirname "$0" ;;
         ./*|../*) (CDPATH= cd -- "$(dirname "$0")" && pwd) ;;
@@ -81,7 +77,7 @@ install_packages() {
     elif command -v apk >/dev/null 2>&1; then
         apk add --no-cache python3 openvpn iproute2 iptables ca-certificates git
     else
-        die "no supported package manager; install python3 openvpn iproute2 iptables git yourself"
+        die "没有可用的包管理器，请先自行安装 python3 openvpn iproute2 iptables git"
     fi
 }
 
@@ -89,7 +85,6 @@ copy_tree() {
     src=$1
     dest=$2
     mkdir -p "$dest"
-    # Explicit list: do not dump tests/cache/.git into the prefix.
     for item in vpngate contrib pyproject.toml README.md LICENSE install.sh uninstall.sh; do
         if [ -e "$src/$item" ]; then
             rm -rf "$dest/$item"
@@ -112,7 +107,7 @@ write_unit() {
     unit=/etc/systemd/system/vpngate.service
     cat > "$unit" <<EOF
 [Unit]
-Description=VPN Gate OpenVPN netns SOCKS5H gateway
+Description=VPN Gate SOCKS5H node
 After=network-online.target
 Wants=network-online.target
 
@@ -123,7 +118,8 @@ Environment=PYTHONPATH=$PREFIX
 ExecStart=$BINDIR/vpngate up --watch
 ExecStop=$BINDIR/vpngate down
 Restart=on-failure
-RestartSec=20
+RestartSec=15
+TimeoutStartSec=0
 TimeoutStopSec=30
 
 [Install]
@@ -143,6 +139,24 @@ EOF
     printf 'installed %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PREFIX/$MARKER_NAME"
 }
 
+wait_ready() {
+    i=0
+    while [ "$i" -lt 45 ]; do
+        if [ -f /run/vpngate/state.json ]; then
+            return 0
+        fi
+        # systemd 启动失败就别傻等
+        if command -v systemctl >/dev/null 2>&1; then
+            if systemctl is-failed vpngate.service >/dev/null 2>&1; then
+                return 1
+            fi
+        fi
+        i=$((i + 1))
+        sleep 2
+    done
+    return 1
+}
+
 SRC_DIR=$(script_dir)
 TMP=
 cleanup() {
@@ -154,14 +168,14 @@ trap cleanup EXIT
 
 if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/vpngate/cli.py" ]; then
     SOURCE=$SRC_DIR
-    log "installing from checkout $SOURCE"
+    log "从本地目录安装 $SOURCE"
 else
     command -v git >/dev/null 2>&1 || install_packages
     TMP=$(mktemp -d)
-    log "cloning $REPO_URL"
+    log "克隆 $REPO_URL"
     git clone --depth 1 "$REPO_URL" "$TMP/src"
     SOURCE=$TMP/src
-    [ -f "$SOURCE/vpngate/cli.py" ] || die "clone does not look like vpngate-socks"
+    [ -f "$SOURCE/vpngate/cli.py" ] || die "克隆结果不像 vpngate 仓库"
 fi
 
 install_packages
@@ -169,28 +183,42 @@ copy_tree "$SOURCE" "$PREFIX"
 write_wrapper
 write_conf
 
+if [ ! -e /dev/net/tun ]; then
+    log "警告: 没有 /dev/net/tun，先在面板里打开 TUN"
+fi
+
+"$BINDIR/vpngate" doctor >/dev/null || die "doctor 失败，依赖不齐"
+
+if [ "$ROTATE" -eq 1 ]; then
+    "$BINDIR/vpngate" init --rotate
+else
+    "$BINDIR/vpngate" init
+fi
+
 if [ "$WITH_SERVICE" -eq 1 ]; then
     if command -v systemctl >/dev/null 2>&1; then
         write_unit
-        log "systemd unit enabled (not started; run: systemctl start vpngate)"
+        log "启动 systemd 服务…"
+        systemctl restart vpngate.service
+        if wait_ready; then
+            log "出口已接通"
+        else
+            log "服务已拉起，还在选日本出口。稍后再执行: vpngate url"
+            systemctl --no-pager --full status vpngate.service || true
+        fi
     else
-        die "systemd not found; omit --with-service"
+        die "没有 systemd。加 --no-service，然后手动: vpngate start"
     fi
+else
+    log "未安装 systemd。需要时执行: vpngate start"
 fi
 
-if [ ! -e /dev/net/tun ]; then
-    log "warning: /dev/net/tun is missing; enable TUN before 'vpngate up'"
-fi
-
-log "running doctor"
-"$BINDIR/vpngate" doctor || die "doctor failed"
-
 log
-log "installed."
-log "  prefix  $PREFIX"
-log "  binary  $BINDIR/vpngate"
+log "========================================"
+"$BINDIR/vpngate" url || true
+log "========================================"
 log
-log "  vpngate list"
-log "  vpngate up"
-log "  vpngate down"
-log "  uninstall.sh   (or: $PREFIX/uninstall.sh)"
+log "客户端填上面这一整行（必须是 socks5h，不要写成 socks5）。"
+log "再看一次:  vpngate url"
+log "停:        vpngate stop"
+log "卸:        $PREFIX/uninstall.sh"
