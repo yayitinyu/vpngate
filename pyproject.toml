@@ -1,0 +1,17 @@
+[project]
+name = "vpngate-socks"
+version = "0.1.0"
+description = "VPN Gate OpenVPN + netns SOCKS5H gateway"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[project.scripts]
+vpngate = "vpngate.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["vpngate*"]

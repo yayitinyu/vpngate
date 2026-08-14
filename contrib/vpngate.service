@@ -1,0 +1,17 @@
+[Unit]
+Description=VPN Gate OpenVPN netns SOCKS5H gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vpngate
+Environment=PYTHONPATH=/opt/vpngate
+ExecStart=/usr/local/bin/vpngate up --watch
+ExecStop=/usr/local/bin/vpngate down
+Restart=on-failure
+RestartSec=20
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
